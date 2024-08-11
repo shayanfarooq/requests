@@ -1,0 +1,141 @@
+package main
+
+import (
+	"bufio"
+	"fmt"
+	"io/ioutil"
+	"net/http"
+	"os"
+	"regexp"
+	"strings"
+	"sync"
+)
+
+const (
+	Reset   = "\033[0m"
+	Red     = "\033[31m"
+	Green   = "\033[32m"
+	Yellow  = "\033[33m"
+	Blue    = "\033[34m"
+	WorkerCount = 10 // Number of concurrent threads
+)
+
+// Regex patterns for detecting various network requests
+var (
+	xhrRegex = regexp.MustCompile(`(?s)new\s+XMLHttpRequest\([^)]*\)[\s\S]*?\.open\([^)]*\)[\s\S]*?\.send\([^)]*\)`)
+	fetchRegex = regexp.MustCompile(`(?s)fetch\s*\(\s*['"]([^'"]+)['"]\s*(?:,\s*{[^}]*?})?\s*\)`)
+	ajaxRegex = regexp.MustCompile(`(?s)\$\s*\.ajax\s*\(\s*{[^}]*?url\s*:\s*['"]([^'"]+)['"][^}]*?}\s*\)`)
+	complexFetchRegex = regexp.MustCompile(`(?s)fetch\s*\(\s*['"]([^'"]+)['"]\s*,\s*\{[^}]*?method\s*:\s*['"]([^'"]+)['"][^}]*?\}`)
+	detailedFetchRegex = regexp.MustCompile(`(?s)fetch\s*\(\s*['"]([^'"]+)['"]\s*,\s*\{[^}]*?method\s*:\s*['"]([^'"]+)['"][^}]*?headers\s*:\s*\{[^}]*?\}(?:[^}]*?body\s*:\s*[^}]*?)?\s*\}`)
+)
+
+// Extracts complete code snippets from JavaScript content based on regex patterns
+func extractCodeSnippet(content []byte, regex *regexp.Regexp) []string {
+	var snippets []string
+	matches := regex.FindAllStringSubmatch(string(content), -1)
+	for _, match := range matches {
+		if len(match) > 0 && strings.TrimSpace(match[0]) != "" {
+			snippets = append(snippets, match[0])
+		}
+	}
+	return snippets
+}
+
+// Analyzes JavaScript content for detailed network request snippets
+func analyzeJSContent(url string, content []byte) {
+	xhrSnippets := extractCodeSnippet(content, xhrRegex)
+	fetchSnippets := extractCodeSnippet(content, fetchRegex)
+	ajaxSnippets := extractCodeSnippet(content, ajaxRegex)
+	//complexFetchSnippets := extractCodeSnippet(content, complexFetchRegex)
+	detailedFetchSnippets := extractCodeSnippet(content, detailedFetchRegex)
+
+	if len(xhrSnippets) > 0 || len(fetchSnippets) > 0 || len(ajaxSnippets) > 0 || len(complexFetchSnippets) > 0 || len(detailedFetchSnippets) > 0 {
+		fmt.Println(Green + "[URL]" + Reset, Blue+url+Reset)
+		if len(xhrSnippets) > 0 {
+			fmt.Println(Yellow + "  XMLHttpRequest snippets:" + Reset)
+			for _, snippet := range xhrSnippets {
+				fmt.Println(Green + "    " + Reset + snippet)
+			}
+		}
+		if len(fetchSnippets) > 0 {
+			fmt.Println(Yellow + "  Fetch API snippets:" + Reset)
+			for _, snippet := range fetchSnippets {
+				fmt.Println(Green + "    " + Reset + snippet)
+			}
+		}
+		if len(ajaxSnippets) > 0 {
+			fmt.Println(Yellow + "  jQuery AJAX snippets:" + Reset)
+			for _, snippet := range ajaxSnippets {
+				fmt.Println(Green + "    " + Reset + snippet)
+			}
+		}
+		if len(complexFetchSnippets) > 0 {
+			fmt.Println(Yellow + "  Complex Fetch API snippets:" + Reset)
+			for _, snippet := range complexFetchSnippets {
+				fmt.Println(Green + "    " + Reset + snippet)
+			}
+		}
+		if len(detailedFetchSnippets) > 0 {
+			fmt.Println(Yellow + "  Detailed Fetch API snippets:" + Reset)
+			for _, snippet := range detailedFetchSnippets {
+				fmt.Println(Green + "    " + Reset + snippet)
+			}
+		}
+	}
+}
+
+// Worker function to process each URL
+func worker(urls <-chan string, wg *sync.WaitGroup) {
+	defer wg.Done()
+	for url := range urls {
+		resp, err := http.Get(url)
+		if err != nil {
+			fmt.Println(Red + "[Error]" + Reset, "Error fetching", url, ":", err)
+			continue
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			fmt.Println(Yellow + "[Warning]" + Reset, "Non-OK HTTP status for", url, ":", resp.Status)
+			continue
+		}
+
+		body, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			fmt.Println(Red + "[Error]" + Reset, "Error reading response body from", url, ":", err)
+			continue
+		}
+
+		analyzeJSContent(url, body)
+	}
+}
+
+// Main function to manage workers and read URLs from stdin
+func main() {
+	var wg sync.WaitGroup
+
+	urls := make(chan string, WorkerCount)
+
+	// Start worker pool
+	for i := 0; i < WorkerCount; i++ {
+		wg.Add(1)
+		go worker(urls, &wg)
+	}
+
+	// Read URLs from stdin and send to worker pool
+	scanner := bufio.NewScanner(os.Stdin)
+	for scanner.Scan() {
+		url := scanner.Text()
+		if url == "" {
+			continue
+		}
+		urls <- url
+	}
+
+	if err := scanner.Err(); err != nil {
+		fmt.Println(Red + "[Error]" + Reset, "Error reading input:", err)
+	}
+
+	close(urls)
+	wg.Wait()
+}
