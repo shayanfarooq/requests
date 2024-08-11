@@ -26,7 +26,7 @@ The script will output detected network request patterns for each URL, formatted
 Example
 sh
 Copy code
-echo "https://example.com/script.js" | go run main.go
+echo "[URL]" | go run main.go
 Code Snippets Detected
 The script categorizes snippets into:
 
